@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Page Receipt — Website Scraper</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  :root {
+    --paper: #faf8f2;
+    --paper-shadow: #e7e3d6;
+    --ink: #262420;
+    --ink-faint: #8a8579;
+    --stamp: #a8382a;
+    --line: #d9d4c4;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #ded9c9;
+    background-image:
+      radial-gradient(circle at 20% 10%, rgba(0,0,0,0.03), transparent 40%),
+      radial-gradient(circle at 80% 80%, rgba(0,0,0,0.03), transparent 40%);
+    font-family: 'Courier New', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--ink);
+    min-height: 100vh;
+  }
+
+  .wrap {
+    max-width: 460px;
+    margin: 56px auto 80px;
+    padding: 0 16px;
+  }
+
+  .receipt {
+    background: var(--paper);
+    padding: 36px 30px 30px;
+    box-shadow: 0 24px 48px rgba(30, 26, 18, 0.22), 0 2px 0 var(--paper-shadow);
+    position: relative;
+  }
+
+  .receipt::before, .receipt::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 10px;
+    background:
+      linear-gradient(135deg, transparent 50%, var(--paper) 50%) 0 0 / 14px 14px repeat-x,
+      linear-gradient(-135deg, transparent 50%, var(--paper) 50%) 0 0 / 14px 14px repeat-x;
+    background-color: #ded9c9;
+  }
+  .receipt::before { top: -10px; }
+  .receipt::after { bottom: -10px; transform: scaleY(-1); }
+
+  .brand {
+    text-align: center;
+    margin-bottom: 4px;
+  }
+
+  .brand .mark {
+    font-size: 1.4rem;
+    letter-spacing: 0.02em;
+    font-weight: 700;
+  }
+
+  .brand .tag {
+    font-size: 0.72rem;
+    color: var(--ink-faint);
+    margin-top: 2px;
+  }
+
+  .rule {
+    border: none;
+    border-top: 1px dashed var(--line);
+    margin: 20px 0;
+  }
+
+  form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  label {
+    font-size: 0.7rem;
+    color: var(--ink-faint);
+  }
+
+  input[type="text"] {
+    font-family: inherit;
+    font-size: 0.95rem;
+    padding: 10px 2px;
+    border: none;
+    border-bottom: 1px solid var(--ink);
+    background: transparent;
+    color: var(--ink);
+    outline: none;
+  }
+
+  input[type="text"]:focus {
+    border-bottom: 2px solid var(--stamp);
+    padding-bottom: 9px;
+  }
+
+  button.go {
+    margin-top: 6px;
+    align-self: center;
+    font-family: inherit;
+    font-size: 0.85rem;
+    letter-spacing: 0.04em;
+    padding: 10px 26px;
+    background: transparent;
+    color: var(--stamp);
+    border: 2px solid var(--stamp);
+    border-radius: 3px;
+    cursor: pointer;
+    transform: rotate(-1deg);
+  }
+
+  button.go:hover { background: var(--stamp); color: var(--paper); }
+  button.go:disabled { opacity: 0.4; cursor: default; background: transparent; color: var(--stamp); }
+
+  .status {
+    text-align: center;
+    font-size: 0.8rem;
+    color: var(--ink-faint);
+    margin-top: 16px;
+    min-height: 1.2em;
+  }
+
+  .line {
+    display: flex;
+    align-items: baseline;
+    font-size: 0.9rem;
+    margin: 7px 0;
+  }
+
+  .line .label {
+    white-space: nowrap;
+  }
+
+  .line .fill {
+    flex: 1;
+    border-bottom: 1px dotted var(--line);
+    margin: 0 6px;
+    transform: translateY(-3px);
+  }
+
+  .line .value {
+    white-space: nowrap;
+    font-weight: 700;
+  }
+
+  .total {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--ink);
+    display: flex;
+    justify-content: space-between;
+    font-size: 1rem;
+    font-weight: 700;
+  }
+
+  .site {
+    font-size: 0.78rem;
+    color: var(--ink-faint);
+    word-break: break-all;
+    text-align: center;
+    margin-top: 4px;
+  }
+
+  .download {
+    display: block;
+    text-align: center;
+    margin-top: 22px;
+    padding: 12px;
+    background: var(--ink);
+    color: var(--paper);
+    text-decoration: none;
+    font-size: 0.85rem;
+    letter-spacing: 0.03em;
+    border-radius: 2px;
+  }
+
+  .download:hover { background: var(--stamp); }
+
+  .error {
+    margin-top: 16px;
+    font-size: 0.82rem;
+    color: var(--stamp);
+    text-align: center;
+    line-height: 1.5;
+  }
+
+  .note {
+    margin-top: 26px;
+    font-size: 0.68rem;
+    color: var(--ink-faint);
+    text-align: center;
+    line-height: 1.6;
+  }
+
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="receipt">
+    <div class="brand">
+      <div class="mark">PAGE RECEIPT</div>
+      <div class="tag">itemized website extraction</div>
+    </div>
+
+    <hr class="rule">
+
+    <form id="scrapeForm">
+      <label for="url">WEBSITE</label>
+      <input type="text" id="url" placeholder="example.com" autocomplete="off" required>
+      <button type="submit" class="go" id="goBtn">SCRAPE</button>
+    </form>
+
+    <div class="status" id="status"></div>
+    <div class="error hidden" id="errorBox"></div>
+
+    <div id="resultBox" class="hidden">
+      <hr class="rule">
+      <div class="site" id="resultUrl"></div>
+      <div style="margin-top:14px;">
+        <div class="line"><span class="label">Headings</span><span class="fill"></span><span class="value" id="cHeadings">0</span></div>
+        <div class="line"><span class="label">Links</span><span class="fill"></span><span class="value" id="cLinks">0</span></div>
+        <div class="line"><span class="label">Images</span><span class="fill"></span><span class="value" id="cImages">0</span></div>
+        <div class="line"><span class="label">Tables</span><span class="fill"></span><span class="value" id="cTables">0</span></div>
+        <div class="line"><span class="label">Scripts</span><span class="fill"></span><span class="value" id="cScripts">0</span></div>
+        <div class="line"><span class="label">Stylesheets</span><span class="fill"></span><span class="value" id="cStyles">0</span></div>
+      </div>
+      <div class="total"><span>ITEMS</span><span id="cTotal">0</span></div>
+      <a href="#" class="download" id="downloadBtn">DOWNLOAD .ZIP</a>
+    </div>
+
+    <div class="note">
+      Runs entirely in your browser. Fetches pages through a public CORS
+      relay, since browsers block direct cross-site page reads — most
+      ordinary sites work, a few tightly-locked ones may not.
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const form = document.getElementById('scrapeForm');
+  const urlInput = document.getElementById('url');
+  const goBtn = document.getElementById('goBtn');
+  const statusEl = document.getElementById('status');
+  const errorBox = document.getElementById('errorBox');
+  const resultBox = document.getElementById('resultBox');
+  const downloadBtn = document.getElementById('downloadBtn');
+
+  const PROXIES = [
+    (u) => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+    (u) => 'https://corsproxy.io/?url=' + encodeURIComponent(u),
+  ];
+
+  function setStatus(msg) { statusEl.textContent = msg || ''; }
+  function showError(msg) {
+    errorBox.textContent = msg;
+    errorBox.classList.remove('hidden');
+  }
+  function clearError() {
+    errorBox.classList.add('hidden');
+    errorBox.textContent = '';
+  }
+
+  async function fetchViaProxy(targetUrl) {
+    let lastErr;
+    for (const build of PROXIES) {
+      try {
+        const resp = await fetch(build(targetUrl));
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const text = await resp.text();
+        if (!text || text.length < 20) throw new Error('Empty response');
+        return text;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr || new Error('All proxies failed');
+  }
+
+  function safeFileName(u) {
+    try {
+      const p = new URL(u);
+      return (p.pathname.split('/').pop() || 'file').replace(/[^a-zA-Z0-9_.-]/g, '_') || 'file';
+    } catch (e) {
+      return 'file';
+    }
+  }
+
+  function extractAll(html, baseUrl) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+
+    // Meta
+    const meta = {};
+    const titleTag = doc.querySelector('title');
+    meta.title = titleTag ? titleTag.textContent.trim() : null;
+    doc.querySelectorAll('meta').forEach((m) => {
+      const name = m.getAttribute('name') || m.getAttribute('property');
+      const content = m.getAttribute('content');
+      if (name && content) meta[name] = content;
+    });
+
+    // Headings
+    const headings = [];
+    for (let level = 1; level <= 6; level++) {
+      doc.querySelectorAll('h' + level).forEach((h) => {
+        const text = h.textContent.trim();
+        if (text) headings.push({ level: 'h' + level, text });
+      });
+    }
+
+    // Links
+    const links = [];
+    const seenLinks = new Set();
+    doc.querySelectorAll('a[href]').forEach((a) => {
+      let href;
+      try { href = new URL(a.getAttribute('href'), baseUrl).href; } catch (e) { return; }
+      const text = a.textContent.trim();
+      const key = href + '|' + text;
+      if (seenLinks.has(key)) return;
+      seenLinks.add(key);
+      links.push({ url: href, text });
+    });
+
+    // Images
+    const images = [];
+    doc.querySelectorAll('img').forEach((img) => {
+      const src = img.getAttribute('src') || img.getAttribute('data-src');
+      if (!src) return;
+      let full;
+      try { full = new URL(src, baseUrl).href; } catch (e) { return; }
+      images.push({ url: full, alt: (img.getAttribute('alt') || '').trim() });
+    });
+
+    // Tables
+    const tables = [];
+    doc.querySelectorAll('table').forEach((table) => {
+      const rows = [];
+      table.querySelectorAll('tr').forEach((tr) => {
+        const cells = Array.from(tr.querySelectorAll('td,th')).map((c) => c.textContent.trim());
+        if (cells.length) rows.push(cells);
+      });
+      if (rows.length) tables.push(rows);
+    });
+
+    // Scripts / stylesheets
+    const inlineScripts = [];
+    const externalScripts = [];
+    doc.querySelectorAll('script').forEach((s) => {
+      const src = s.getAttribute('src');
+      if (src) {
+        try { externalScripts.push(new URL(src, baseUrl).href); } catch (e) {}
+      } else if (s.textContent.trim()) {
+        inlineScripts.push(s.textContent.trim());
+      }
+    });
+    const stylesheets = [];
+    doc.querySelectorAll('link[rel="stylesheet"]').forEach((l) => {
+      const href = l.getAttribute('href');
+      if (href) {
+        try { stylesheets.push(new URL(href, baseUrl).href); } catch (e) {}
+      }
+    });
+
+    // Visible text
+    const bodyClone = doc.body ? doc.body.cloneNode(true) : null;
+    let text = '';
+    if (bodyClone) {
+      bodyClone.querySelectorAll('script,style,noscript').forEach((n) => n.remove());
+      text = bodyClone.textContent
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .join('\n');
+    }
+
+    return { meta, headings, links, images, tables, inlineScripts, externalScripts, stylesheets, text };
+  }
+
+  async function downloadResources(urls, folder, session) {
+    const results = [];
+    const used = new Set();
+    for (const u of urls.slice(0, 25)) {
+      try {
+        const content = await fetchViaProxy(u);
+        let name = safeFileName(u);
+        let final = name, i = 1;
+        while (used.has(final)) { final = name + '_' + (i++); }
+        used.add(final);
+        folder.file(final, content);
+        results.push([u, final]);
+      } catch (e) {
+        results.push([u, 'FAILED']);
+      }
+    }
+    return results;
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    clearError();
+    resultBox.classList.add('hidden');
+
+    let raw = urlInput.value.trim();
+    if (!raw) return;
+    const targetUrl = raw.startsWith('http://') || raw.startsWith('https://') ? raw : 'https://' + raw;
+
+    goBtn.disabled = true;
+    setStatus('fetching page…');
+
+    try {
+      const html = await fetchViaProxy(targetUrl);
+      setStatus('extracting…');
+      const data = extractAll(html, targetUrl);
+
+      setStatus('packaging files…');
+      const zip = new JSZip();
+      zip.file('raw.html', html);
+      zip.file('text.txt', data.text);
+      if (data.inlineScripts.length) {
+        zip.file('inline_scripts.js', data.inlineScripts.join('\n\n/* ---- next inline script ---- */\n\n'));
+      }
+      if (data.tables.length) {
+        const tablesFolder = zip.folder('tables');
+        data.tables.forEach((table, i) => {
+          const csv = table.map((row) =>
+            row.map((cell) => '"' + String(cell).replace(/"/g, '""') + '"').join(',')
+          ).join('\n');
+          tablesFolder.file('table_' + (i + 1) + '.csv', csv);
+        });
+      }
+
+      const resourcesFolder = zip.folder('resources');
+      setStatus('fetching scripts & stylesheets…');
+      const scriptResults = await downloadResources(data.externalScripts, resourcesFolder);
+      const styleResults = await downloadResources(data.stylesheets, resourcesFolder);
+
+      const jsonData = {
+        url: targetUrl,
+        meta: data.meta,
+        headings: data.headings,
+        links: data.links,
+        images: data.images,
+        tables_count: data.tables.length,
+        external_scripts: scriptResults,
+        stylesheets: styleResults,
+      };
+      zip.file('data.json', JSON.stringify(jsonData, null, 2));
+
+      setStatus('zipping…');
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const blobUrl = URL.createObjectURL(blob);
+      downloadBtn.href = blobUrl;
+      downloadBtn.download = 'scrape_' + (new URL(targetUrl).hostname).replace(/[^a-zA-Z0-9_.-]/g, '_') + '.zip';
+
+      document.getElementById('resultUrl').textContent = targetUrl;
+      document.getElementById('cHeadings').textContent = data.headings.length;
+      document.getElementById('cLinks').textContent = data.links.length;
+      document.getElementById('cImages').textContent = data.images.length;
+      document.getElementById('cTables').textContent = data.tables.length;
+      document.getElementById('cScripts').textContent = scriptResults.length;
+      document.getElementById('cStyles').textContent = styleResults.length;
+      document.getElementById('cTotal').textContent =
+        data.headings.length + data.links.length + data.images.length +
+        data.tables.length + scriptResults.length + styleResults.length;
+
+      resultBox.classList.remove('hidden');
+      setStatus('');
+    } catch (err) {
+      console.error(err);
+      showError("Couldn't reach that page through the relay. Some sites block this — try another, or double check the address.");
+      setStatus('');
+    } finally {
+      goBtn.disabled = false;
+    }
+  });
+})();
+</script>
+
+</body>
+</html>
