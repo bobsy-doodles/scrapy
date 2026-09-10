@@ -237,15 +237,22 @@
         <div class="line"><span class="label">Tables</span><span class="fill"></span><span class="value" id="cTables">0</span></div>
         <div class="line"><span class="label">Scripts</span><span class="fill"></span><span class="value" id="cScripts">0</span></div>
         <div class="line"><span class="label">Stylesheets</span><span class="fill"></span><span class="value" id="cStyles">0</span></div>
+        <div class="line"><span class="label">Forms</span><span class="fill"></span><span class="value" id="cForms">0</span></div>
+        <div class="line"><span class="label">Iframes</span><span class="fill"></span><span class="value" id="cIframes">0</span></div>
+        <div class="line"><span class="label">Media files</span><span class="fill"></span><span class="value" id="cMedia">0</span></div>
+        <div class="line"><span class="label">Structured data</span><span class="fill"></span><span class="value" id="cStructured">0</span></div>
+        <div class="line"><span class="label">Word count</span><span class="fill"></span><span class="value" id="cWords">0</span></div>
       </div>
       <div class="total"><span>ITEMS</span><span id="cTotal">0</span></div>
       <a href="#" class="download" id="downloadBtn">DOWNLOAD .ZIP</a>
     </div>
 
     <div class="note">
-      Runs entirely in your browser. Fetches pages through a public CORS
-      relay, since browsers block direct cross-site page reads — most
-      ordinary sites work, a few tightly-locked ones may not.
+      Runs entirely in your browser. Fetches pages through several public
+      CORS relays in sequence (falling through to the next if one is
+      blocked), since browsers refuse direct cross-site page reads — this
+      covers most ordinary sites, though a few tightly-locked ones may
+      still refuse all of them.
     </div>
   </div>
 </div>
@@ -260,10 +267,20 @@
   const resultBox = document.getElementById('resultBox');
   const downloadBtn = document.getElementById('downloadBtn');
 
-  const PROXIES = [
+  // Ordered fallback chain of public CORS relays. Different relays are
+  // blocked by different sites/networks, so trying several in sequence
+  // meaningfully increases the odds any given page comes through.
+  const RAW_PROXIES = [
     (u) => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
     (u) => 'https://corsproxy.io/?url=' + encodeURIComponent(u),
+    (u) => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(u),
+    (u) => 'https://thingproxy.freeboard.io/fetch/' + u,
   ];
+
+  // This relay returns JSON with a status block (HTTP code, content type,
+  // response time) alongside the page body, so we get a bit of the
+  // "response header" picture a plain text relay can't give us.
+  const JSON_PROXY = (u) => 'https://api.allorigins.win/get?url=' + encodeURIComponent(u);
 
   function setStatus(msg) { statusEl.textContent = msg || ''; }
   function showError(msg) {
@@ -275,20 +292,59 @@
     errorBox.textContent = '';
   }
 
-  async function fetchViaProxy(targetUrl) {
+  function fetchWithTimeout(url, ms) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
+  }
+
+  // Tries the metadata-rich JSON relay first (for status/content-type info),
+  // then falls through the plain-text relays. Returns { html, statusInfo }.
+  async function fetchPageViaProxy(targetUrl) {
     let lastErr;
-    for (const build of PROXIES) {
+
+    try {
+      const resp = await fetchWithTimeout(JSON_PROXY(targetUrl), 12000);
+      if (resp.ok) {
+        const json = await resp.json();
+        if (json && json.contents && json.contents.length > 20) {
+          return { html: json.contents, statusInfo: json.status || null };
+        }
+      }
+    } catch (e) {
+      lastErr = e;
+    }
+
+    for (const build of RAW_PROXIES) {
       try {
-        const resp = await fetch(build(targetUrl));
+        const resp = await fetchWithTimeout(build(targetUrl), 12000);
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const text = await resp.text();
         if (!text || text.length < 20) throw new Error('Empty response');
+        return { html: text, statusInfo: null };
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr || new Error('All relays failed');
+  }
+
+  // Simpler variant for fetching resource files (scripts/css/favicon) where
+  // we just need the raw text/bytes, not status metadata.
+  async function fetchViaProxy(targetUrl) {
+    let lastErr;
+    for (const build of RAW_PROXIES) {
+      try {
+        const resp = await fetchWithTimeout(build(targetUrl), 10000);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const text = await resp.text();
+        if (!text || text.length < 1) throw new Error('Empty response');
         return text;
       } catch (e) {
         lastErr = e;
       }
     }
-    throw lastErr || new Error('All proxies failed');
+    throw lastErr || new Error('All relays failed');
   }
 
   function safeFileName(u) {
@@ -307,10 +363,65 @@
     const meta = {};
     const titleTag = doc.querySelector('title');
     meta.title = titleTag ? titleTag.textContent.trim() : null;
+    meta.language = doc.documentElement.getAttribute('lang') || null;
     doc.querySelectorAll('meta').forEach((m) => {
       const name = m.getAttribute('name') || m.getAttribute('property');
       const content = m.getAttribute('content');
       if (name && content) meta[name] = content;
+    });
+
+    // Canonical URL + favicon + other <link> relations (icon, manifest, alternate...)
+    const linkTags = [];
+    let canonical = null, favicon = null;
+    doc.querySelectorAll('link[href]').forEach((l) => {
+      const rel = (l.getAttribute('rel') || '').toLowerCase();
+      let href;
+      try { href = new URL(l.getAttribute('href'), baseUrl).href; } catch (e) { return; }
+      linkTags.push({ rel, href });
+      if (rel === 'canonical') canonical = href;
+      if (!favicon && /icon/.test(rel)) favicon = href;
+    });
+
+    // JSON-LD structured data blocks
+    const structuredData = [];
+    doc.querySelectorAll('script[type="application/ld+json"]').forEach((s) => {
+      try { structuredData.push(JSON.parse(s.textContent)); }
+      catch (e) { structuredData.push({ _parse_error: true, raw: s.textContent.slice(0, 500) }); }
+    });
+
+    // Forms and their fields
+    const forms = [];
+    doc.querySelectorAll('form').forEach((f) => {
+      const fields = [];
+      f.querySelectorAll('input,textarea,select').forEach((inp) => {
+        fields.push({
+          tag: inp.tagName.toLowerCase(),
+          name: inp.getAttribute('name'),
+          type: inp.getAttribute('type') || inp.tagName.toLowerCase(),
+          placeholder: inp.getAttribute('placeholder'),
+        });
+      });
+      let action = null;
+      try { action = new URL(f.getAttribute('action') || '', baseUrl).href; } catch (e) {}
+      forms.push({ action, method: (f.getAttribute('method') || 'get').toUpperCase(), fields });
+    });
+
+    // Iframes
+    const iframes = [];
+    doc.querySelectorAll('iframe[src]').forEach((f) => {
+      try { iframes.push(new URL(f.getAttribute('src'), baseUrl).href); } catch (e) {}
+    });
+
+    // Media: video/audio sources
+    const media = [];
+    doc.querySelectorAll('video, audio').forEach((m) => {
+      const srcs = [];
+      const direct = m.getAttribute('src');
+      if (direct) srcs.push(direct);
+      m.querySelectorAll('source[src]').forEach((s) => srcs.push(s.getAttribute('src')));
+      srcs.forEach((s) => {
+        try { media.push({ type: m.tagName.toLowerCase(), url: new URL(s, baseUrl).href }); } catch (e) {}
+      });
     });
 
     // Headings
@@ -387,13 +498,25 @@
         .join('\n');
     }
 
-    return { meta, headings, links, images, tables, inlineScripts, externalScripts, stylesheets, text };
+    // Distinct external domains linked from the page (handy for a quick
+    // "who does this page talk to" view)
+    const domains = new Set();
+    links.forEach((l) => { try { domains.add(new URL(l.url).hostname); } catch (e) {} });
+    [...externalScripts, ...stylesheets].forEach((u) => { try { domains.add(new URL(u).hostname); } catch (e) {} });
+
+    const wordCount = text ? text.split(/\s+/).filter(Boolean).length : 0;
+
+    return {
+      meta, canonical, favicon, linkTags, structuredData, forms, iframes, media,
+      headings, links, images, tables, inlineScripts, externalScripts, stylesheets,
+      text, domains: Array.from(domains).sort(), wordCount,
+    };
   }
 
   async function downloadResources(urls, folder, session) {
     const results = [];
     const used = new Set();
-    for (const u of urls.slice(0, 25)) {
+    for (const u of urls.slice(0, 50)) {
       try {
         const content = await fetchViaProxy(u);
         let name = safeFileName(u);
@@ -422,7 +545,7 @@
     setStatus('fetching page…');
 
     try {
-      const html = await fetchViaProxy(targetUrl);
+      const { html, statusInfo } = await fetchPageViaProxy(targetUrl);
       setStatus('extracting…');
       const data = extractAll(html, targetUrl);
 
@@ -442,19 +565,43 @@
           tablesFolder.file('table_' + (i + 1) + '.csv', csv);
         });
       }
+      if (data.structuredData.length) {
+        zip.file('structured_data.json', JSON.stringify(data.structuredData, null, 2));
+      }
 
       const resourcesFolder = zip.folder('resources');
       setStatus('fetching scripts & stylesheets…');
       const scriptResults = await downloadResources(data.externalScripts, resourcesFolder);
       const styleResults = await downloadResources(data.stylesheets, resourcesFolder);
+      let faviconResult = null;
+      if (data.favicon) {
+        try {
+          const content = await fetchViaProxy(data.favicon);
+          const name = 'favicon_' + safeFileName(data.favicon);
+          resourcesFolder.file(name, content);
+          faviconResult = [data.favicon, name];
+        } catch (e) {
+          faviconResult = [data.favicon, 'FAILED'];
+        }
+      }
 
       const jsonData = {
         url: targetUrl,
+        response_status: statusInfo,
         meta: data.meta,
+        canonical_url: data.canonical,
+        favicon: faviconResult,
+        link_tags: data.linkTags,
+        word_count: data.wordCount,
+        distinct_linked_domains: data.domains,
         headings: data.headings,
         links: data.links,
         images: data.images,
         tables_count: data.tables.length,
+        forms: data.forms,
+        iframes: data.iframes,
+        media: data.media,
+        structured_data_count: data.structuredData.length,
         external_scripts: scriptResults,
         stylesheets: styleResults,
       };
@@ -473,9 +620,15 @@
       document.getElementById('cTables').textContent = data.tables.length;
       document.getElementById('cScripts').textContent = scriptResults.length;
       document.getElementById('cStyles').textContent = styleResults.length;
+      document.getElementById('cForms').textContent = data.forms.length;
+      document.getElementById('cIframes').textContent = data.iframes.length;
+      document.getElementById('cMedia').textContent = data.media.length;
+      document.getElementById('cStructured').textContent = data.structuredData.length;
+      document.getElementById('cWords').textContent = data.wordCount;
       document.getElementById('cTotal').textContent =
         data.headings.length + data.links.length + data.images.length +
-        data.tables.length + scriptResults.length + styleResults.length;
+        data.tables.length + scriptResults.length + styleResults.length +
+        data.forms.length + data.iframes.length + data.media.length;
 
       resultBox.classList.remove('hidden');
       setStatus('');
