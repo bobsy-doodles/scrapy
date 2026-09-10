@@ -242,6 +242,9 @@
         <div class="line"><span class="label">Media files</span><span class="fill"></span><span class="value" id="cMedia">0</span></div>
         <div class="line"><span class="label">Structured data</span><span class="fill"></span><span class="value" id="cStructured">0</span></div>
         <div class="line"><span class="label">Word count</span><span class="fill"></span><span class="value" id="cWords">0</span></div>
+        <div class="line"><span class="label">Emails</span><span class="fill"></span><span class="value" id="cEmails">0</span></div>
+        <div class="line"><span class="label">Buttons</span><span class="fill"></span><span class="value" id="cButtons">0</span></div>
+        <div class="line"><span class="label">SVGs</span><span class="fill"></span><span class="value" id="cSVGs">0</span></div>
       </div>
       <div class="total"><span>ITEMS</span><span id="cTotal">0</span></div>
       <a href="#" class="download" id="downloadBtn">DOWNLOAD .ZIP</a>
@@ -506,10 +509,28 @@
 
     const wordCount = text ? text.split(/\s+/).filter(Boolean).length : 0;
 
-    return {
+    // Emails (Regex extraction from the raw text)
+    const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/gi;
+    const emails = [...new Set((text.match(emailRegex) || []))];
+
+    // Buttons
+    const buttons = [];
+    doc.querySelectorAll('button').forEach((b) => {
+      const btnText = b.textContent.trim();
+      buttons.push({ text: btnText || '(empty)', type: b.getAttribute('type') || 'button' });
+    });
+
+    // Inline SVGs
+    const svgs = [];
+    doc.querySelectorAll('svg').forEach((svg) => {
+      svgs.push(svg.outerHTML);
+    });
+
+return {
       meta, canonical, favicon, linkTags, structuredData, forms, iframes, media,
       headings, links, images, tables, inlineScripts, externalScripts, stylesheets,
-      text, domains: Array.from(domains).sort(), wordCount,
+      text, domains: Array.from(domains).sort(), wordCount, 
+      emails, buttons, svgs // <-- Added new data points here
     };
   }
 
@@ -604,6 +625,9 @@
         structured_data_count: data.structuredData.length,
         external_scripts: scriptResults,
         stylesheets: styleResults,
+        emails: data.emails,        // <-- Added
+        buttons: data.buttons,      // <-- Added
+        svgs_count: data.svgs.length // <-- Added
       };
       zip.file('data.json', JSON.stringify(jsonData, null, 2));
 
@@ -625,10 +649,17 @@
       document.getElementById('cMedia').textContent = data.media.length;
       document.getElementById('cStructured').textContent = data.structuredData.length;
       document.getElementById('cWords').textContent = data.wordCount;
+      // Add these below cWords:
+      document.getElementById('cEmails').textContent = data.emails.length;
+      document.getElementById('cButtons').textContent = data.buttons.length;
+      document.getElementById('cSVGs').textContent = data.svgs.length;
+
+      // Update the total counter to include the new visual elements
       document.getElementById('cTotal').textContent =
         data.headings.length + data.links.length + data.images.length +
         data.tables.length + scriptResults.length + styleResults.length +
-        data.forms.length + data.iframes.length + data.media.length;
+        data.forms.length + data.iframes.length + data.media.length +
+        data.buttons.length + data.svgs.length;
 
       resultBox.classList.remove('hidden');
       setStatus('');
