@@ -1,0 +1,1224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="Enter a web address and get an itemized receipt of everything on the page, plus a zip of the extracted files. Runs in your browser.">
+<title>Page Receipt — Website Scraper</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" defer></script>
+<style>
+  :root {
+    --paper: #faf8f2;
+    --paper-shadow: #e7e3d6;
+    --ink: #262420;
+    --ink-faint: #6b665b;
+    --stamp: #a8382a;
+    --line: #cfc9b6;
+    --desk: #ded9c9;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root { --desk: #1c1a16; }
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--desk);
+    background-image:
+      radial-gradient(circle at 20% 10%, rgba(0,0,0,0.04), transparent 40%),
+      radial-gradient(circle at 80% 80%, rgba(0,0,0,0.04), transparent 40%);
+    font-family: 'Courier New', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--ink);
+    min-height: 100vh;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  .wrap {
+    max-width: 460px;
+    margin: 56px auto 80px;
+    padding: 0 16px;
+  }
+
+  .receipt {
+    background: var(--paper);
+    padding: 36px 30px 30px;
+    box-shadow: 0 24px 48px rgba(30, 26, 18, 0.28), 0 2px 0 var(--paper-shadow);
+    position: relative;
+  }
+
+  /* Torn zig-zag paper edges */
+  .receipt::before, .receipt::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 7px;
+    background: var(--paper);
+  }
+  .receipt::before {
+    top: -7px;
+    -webkit-mask: conic-gradient(from 135deg at top, #0000, #000 1deg 89deg, #0000 90deg) 50% / 14px 100%;
+            mask: conic-gradient(from 135deg at top, #0000, #000 1deg 89deg, #0000 90deg) 50% / 14px 100%;
+  }
+  .receipt::after {
+    bottom: -7px;
+    -webkit-mask: conic-gradient(from -45deg at bottom, #0000, #000 1deg 89deg, #0000 90deg) 50% / 14px 100%;
+            mask: conic-gradient(from -45deg at bottom, #0000, #000 1deg 89deg, #0000 90deg) 50% / 14px 100%;
+  }
+
+  .brand { text-align: center; margin-bottom: 4px; }
+  .brand .mark { font-size: 1.4rem; letter-spacing: 0.02em; font-weight: 700; }
+  .brand .tag { font-size: 0.72rem; color: var(--ink-faint); margin-top: 2px; }
+
+  .rule {
+    border: none;
+    border-top: 1px dashed var(--line);
+    margin: 20px 0;
+  }
+
+  /* ---------- Form ---------- */
+  form { display: flex; flex-direction: column; }
+  form > * + * { margin-top: 10px; }
+
+  label, legend { font-size: 0.7rem; color: var(--ink-faint); }
+
+  input[type="text"] {
+    font-family: inherit;
+    font-size: 1rem; /* 16px+ stops iOS zooming on focus */
+    padding: 10px 2px;
+    border: none;
+    border-bottom: 1px solid var(--ink);
+    border-radius: 0;
+    background: transparent;
+    color: var(--ink);
+    outline: none;
+    width: 100%;
+  }
+  input[type="text"]:focus {
+    border-bottom: 2px solid var(--stamp);
+    padding-bottom: 9px;
+  }
+  input[type="text"]::placeholder { color: #9b9686; }
+
+  fieldset { border: none; margin: 0; padding: 0; min-width: 0; }
+  fieldset legend { padding: 0; margin-bottom: 4px; }
+  .check {
+    display: flex;
+    align-items: center;
+    font-size: 0.8rem;
+    color: var(--ink);
+    padding: 3px 0;
+    cursor: pointer;
+  }
+  .check input { margin: 0 8px 0 0; accent-color: var(--stamp); }
+
+  .btn-row { display: flex; justify-content: center; flex-wrap: wrap; }
+  .btn-row > * { margin: 6px 5px 0; }
+
+  button.go {
+    font-family: inherit;
+    font-size: 0.85rem;
+    letter-spacing: 0.04em;
+    padding: 10px 26px;
+    background: transparent;
+    color: var(--stamp);
+    border: 2px solid var(--stamp);
+    border-radius: 3px;
+    cursor: pointer;
+    transform: rotate(-1deg);
+  }
+  button.go:hover { background: var(--stamp); color: var(--paper); }
+  button.go:disabled { opacity: 0.4; cursor: default; background: transparent; color: var(--stamp); }
+
+  button.ghost {
+    font-family: inherit;
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+    padding: 8px 14px;
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--ink);
+    border-radius: 2px;
+    cursor: pointer;
+  }
+  button.ghost:hover { background: var(--ink); color: var(--paper); }
+
+  button:focus-visible, a:focus-visible, .check input:focus-visible {
+    outline: 2px solid var(--stamp);
+    outline-offset: 2px;
+  }
+
+  /* ---------- Status ---------- */
+  .progress {
+    height: 4px;
+    background: var(--line);
+    margin-top: 16px;
+    overflow: hidden;
+  }
+  .progress .bar {
+    height: 100%;
+    width: 0;
+    background: var(--stamp);
+    transition: width 0.25s ease;
+  }
+
+  .status {
+    text-align: center;
+    font-size: 0.8rem;
+    color: var(--ink-faint);
+    margin-top: 12px;
+    min-height: 1.2em;
+  }
+
+  .error {
+    margin-top: 16px;
+    font-size: 0.82rem;
+    color: var(--stamp);
+    text-align: center;
+    line-height: 1.5;
+  }
+
+  /* ---------- Result ---------- */
+  .summary { text-align: center; }
+  .summary .title { font-weight: 700; font-size: 0.95rem; line-height: 1.35; overflow-wrap: anywhere; }
+  .summary .site { font-size: 0.75rem; color: var(--ink-faint); overflow-wrap: anywhere; margin-top: 3px; }
+  .summary .desc {
+    font-size: 0.75rem;
+    color: var(--ink-faint);
+    line-height: 1.5;
+    margin-top: 8px;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+  .summary .info { font-size: 0.7rem; margin-top: 8px; color: var(--ink-faint); }
+  .summary .info.warn { color: var(--stamp); }
+  .summary .no { font-size: 0.7rem; margin-top: 8px; letter-spacing: 0.04em; }
+
+  .items { margin-top: 14px; }
+
+  .item { margin: 0; }
+
+  .line {
+    display: flex;
+    align-items: baseline;
+    width: 100%;
+    font-family: inherit;
+    font-size: 0.9rem;
+    margin: 0;
+    padding: 4px 0;
+    color: var(--ink);
+    background: none;
+    border: 0;
+    text-align: left;
+  }
+  button.line { cursor: pointer; -webkit-appearance: none; appearance: none; }
+  button.line:hover .label { text-decoration: underline; text-decoration-style: dotted; }
+  .line .caret { display: inline-block; width: 1.3ch; margin-right: 2px; color: var(--stamp); font-weight: 700; }
+  .line .label { white-space: nowrap; }
+  .line .fill {
+    flex: 1;
+    min-width: 8px;
+    border-bottom: 1px dotted var(--line);
+    margin: 0 6px;
+    transform: translateY(-3px);
+  }
+  .line .value { white-space: nowrap; font-weight: 700; }
+  .line.zero { color: var(--ink-faint); }
+  .line.zero .value { font-weight: 400; }
+
+  .panel {
+    list-style: none;
+    margin: 2px 0 10px 0;
+    padding: 8px 10px;
+    background: rgba(0, 0, 0, 0.04);
+    border-left: 2px solid var(--stamp);
+    font-size: 0.72rem;
+    line-height: 1.45;
+    max-height: 230px;
+    overflow: auto;
+  }
+  .panel[hidden] { display: none; }
+  .panel li { padding: 3px 0; overflow-wrap: anywhere; word-break: break-word; }
+  .panel li + li { border-top: 1px dotted var(--line); }
+  .panel li.more { color: var(--ink-faint); font-style: italic; }
+
+  .total {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--ink);
+    display: flex;
+    justify-content: space-between;
+    font-size: 1rem;
+    font-weight: 700;
+  }
+
+  .stats { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); }
+
+  .download {
+    display: block;
+    text-align: center;
+    margin-top: 22px;
+    padding: 12px;
+    background: var(--ink);
+    color: var(--paper);
+    text-decoration: none;
+    font-size: 0.85rem;
+    letter-spacing: 0.03em;
+    border-radius: 2px;
+  }
+  .download:hover { background: var(--stamp); }
+
+  .barcode { display: block; width: 72%; height: 38px; margin: 24px auto 6px; color: var(--ink); }
+  .thanks { text-align: center; font-size: 0.7rem; letter-spacing: 0.14em; color: var(--ink-faint); }
+
+  .note {
+    margin-top: 26px;
+    font-size: 0.68rem;
+    color: var(--ink-faint);
+    text-align: center;
+    line-height: 1.6;
+  }
+
+  .hidden { display: none; }
+
+  /* Receipt "prints" out of the slot */
+  @keyframes feed {
+    from { clip-path: inset(0 0 100% 0); }
+    to   { clip-path: inset(0 0 0 0); }
+  }
+  #resultBox.printing { animation: feed 1.1s steps(24, end) both; }
+  @media (prefers-reduced-motion: reduce) {
+    #resultBox.printing { animation: none; }
+    .progress .bar { transition: none; }
+  }
+
+  @media (max-width: 380px) {
+    .receipt { padding: 30px 20px 26px; }
+    .wrap { margin-top: 40px; }
+  }
+
+  @media print {
+    html, body { background: #fff; }
+    .wrap { margin: 0 auto; }
+    .receipt { box-shadow: none; }
+    .receipt::before, .receipt::after,
+    form, .actions, .note, .progress, .status { display: none !important; }
+    .panel { max-height: none; overflow: visible; }
+    #resultBox.printing { animation: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <main class="receipt">
+    <header class="brand">
+      <div class="mark">PAGE RECEIPT</div>
+      <div class="tag">itemized website extraction</div>
+    </header>
+
+    <hr class="rule">
+
+    <form id="scrapeForm" novalidate>
+      <label for="url">WEBSITE</label>
+      <input type="text" id="url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off" placeholder="example.com">
+
+      <fieldset>
+        <legend>ALSO SAVE IN ZIP</legend>
+        <label class="check"><input type="checkbox" id="optAssets" checked> scripts &amp; stylesheets</label>
+        <label class="check"><input type="checkbox" id="optImages"> images (first 40)</label>
+      </fieldset>
+
+      <div class="btn-row">
+        <button type="submit" class="go" id="goBtn">SCRAPE</button>
+        <button type="button" class="ghost hidden" id="cancelBtn">CANCEL</button>
+      </div>
+    </form>
+
+    <div class="progress hidden" id="progress" aria-hidden="true"><div class="bar" id="bar"></div></div>
+    <div class="status" id="status" role="status" aria-live="polite"></div>
+    <div class="error hidden" id="errorBox" role="alert"></div>
+
+    <section id="resultBox" class="hidden" aria-label="Scrape receipt">
+      <hr class="rule">
+
+      <div class="summary">
+        <div class="title" id="rTitle"></div>
+        <div class="site" id="rUrl"></div>
+        <div class="desc hidden" id="rDesc"></div>
+        <div class="info" id="rInfo"></div>
+        <div class="no" id="rNo"></div>
+      </div>
+
+      <div class="items" id="itemsEl"></div>
+      <div class="total"><span>ITEMS</span><span id="cTotal">0</span></div>
+      <div class="stats" id="statsEl"></div>
+
+      <div class="actions">
+        <a href="#" class="download hidden" id="downloadBtn">DOWNLOAD .ZIP</a>
+        <div class="btn-row">
+          <button type="button" class="ghost" id="copyBtn">COPY JSON</button>
+          <button type="button" class="ghost" id="printBtn">PRINT RECEIPT</button>
+        </div>
+      </div>
+
+      <svg class="barcode" id="barcode" aria-hidden="true" focusable="false"></svg>
+      <div class="thanks">THANK YOU FOR SCRAPING</div>
+    </section>
+
+    <div class="note">
+      Runs in your browser. Pages are fetched through public CORS relays, since
+      browsers refuse direct cross-site reads, so those relays can see the
+      addresses you scrape. Don't use it on pages behind a login, and only
+      grab what you have the right to. A few tightly locked sites will refuse
+      every relay.
+    </div>
+    <noscript><div class="error">This tool needs JavaScript.</div></noscript>
+  </main>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---------------------------------------------------------------- config
+  const NS_SVG = 'http://www.w3.org/2000/svg';
+
+  // Ordered fallback chain of public CORS relays. The one that last worked is
+  // tried first next time, so big resource batches don't wade through dead ones.
+  const RELAYS = [
+    (u) => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+    (u) => 'https://corsproxy.io/?url=' + encodeURIComponent(u),
+    (u) => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(u),
+    (u) => 'https://thingproxy.freeboard.io/fetch/' + u,
+  ];
+  // Returns JSON with a status block (HTTP code, content type, final URL,
+  // response time) next to the page body.
+  const JSON_RELAY = (u) => 'https://api.allorigins.win/get?url=' + encodeURIComponent(u);
+
+  const LIMITS = { assets: 50, images: 40, shown: 60, concurrency: 4 };
+  let lastGoodRelay = 0;
+
+  // ------------------------------------------------------------- elements
+  const $ = (id) => document.getElementById(id);
+  const form = $('scrapeForm');
+  const urlInput = $('url');
+  const optAssets = $('optAssets');
+  const optImages = $('optImages');
+  const goBtn = $('goBtn');
+  const cancelBtn = $('cancelBtn');
+  const progress = $('progress');
+  const bar = $('bar');
+  const statusEl = $('status');
+  const errorBox = $('errorBox');
+  const resultBox = $('resultBox');
+  const itemsEl = $('itemsEl');
+  const statsEl = $('statsEl');
+  const downloadBtn = $('downloadBtn');
+  const copyBtn = $('copyBtn');
+  const printBtn = $('printBtn');
+
+  let current = null;     // AbortController of the run in progress
+  let blobUrl = null;     // object URL of the latest zip
+  let lastJson = '';      // JSON text for the Copy button
+
+  class UserError extends Error {}
+  class Cancelled extends Error {}
+
+  // --------------------------------------------------------------- helpers
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function clean(s) { return (s || '').replace(/\s+/g, ' ').trim(); }
+
+  function fmtBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  function hashString(s) { // FNV-1a
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
+  function seededRandom(seed) { // mulberry32
+    let a = seed;
+    return function () {
+      a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function safeFileName(u) {
+    try {
+      let name = new URL(u).pathname.split('/').pop() || '';
+      try { name = decodeURIComponent(name); } catch (e) {}
+      name = name.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(-80);
+      return name || 'file';
+    } catch (e) {
+      return 'file';
+    }
+  }
+
+  function uniqueName(used, name) {
+    let final = name, i = 1;
+    const dot = name.lastIndexOf('.');
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : '';
+    while (used.has(final)) final = stem + '_' + (i++) + ext;
+    used.add(final);
+    return final;
+  }
+
+  function csvCell(c) {
+    let s = String(c == null ? '' : c);
+    // Stop spreadsheet apps from treating scraped text as a formula
+    if (/^[=+@\t\r]/.test(s) || /^-(?![\d.]+$)/.test(s)) s = "'" + s;
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+
+  function toCsv(rows) {
+    return '﻿' + rows.map((r) => r.map(csvCell).join(',')).join('\n');
+  }
+
+  function normalizeUrl(raw) {
+    raw = (raw || '').trim();
+    if (!raw) throw new UserError('Enter a website address first.');
+    if (!/^https?:\/\//i.test(raw)) {
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+        throw new UserError('Only http:// and https:// addresses can be scraped.');
+      }
+      raw = 'https://' + raw;
+    }
+    let u;
+    try { u = new URL(raw); }
+    catch (e) { throw new UserError("That doesn't look like a valid web address."); }
+    const host = u.hostname.toLowerCase();
+    const local = host === 'localhost' || host.indexOf(':') >= 0 ||
+      /\.(local|internal|lan|home|localdomain)$/.test(host) ||
+      /^(127|10)\./.test(host) || /^192\.168\./.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host) || /^169\.254\./.test(host) || host === '0.0.0.0';
+    if (local) {
+      throw new UserError('That is a local or private address. The public relays can only reach sites on the open internet.');
+    }
+    if (host.indexOf('.') < 0) {
+      throw new UserError('Try a full domain name, like example.com.');
+    }
+    return u.href;
+  }
+
+  function setStatus(msg, frac) {
+    statusEl.textContent = msg || '';
+    if (frac == null) {
+      progress.classList.add('hidden');
+    } else {
+      progress.classList.remove('hidden');
+      bar.style.width = Math.max(2, Math.round(frac * 100)) + '%';
+    }
+  }
+
+  function showError(msg) {
+    errorBox.textContent = msg;
+    errorBox.classList.remove('hidden');
+  }
+  function clearError() {
+    errorBox.classList.add('hidden');
+    errorBox.textContent = '';
+  }
+
+  function setRunning(on) {
+    goBtn.disabled = on;
+    cancelBtn.classList.toggle('hidden', !on);
+    urlInput.readOnly = on;
+  }
+
+  // --------------------------------------------------------------- network
+  function fetchWithTimeout(url, ms, outer) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    const onAbort = () => controller.abort();
+    if (outer) {
+      if (outer.aborted) controller.abort();
+      else outer.addEventListener('abort', onAbort);
+    }
+    return fetch(url, { signal: controller.signal }).finally(() => {
+      clearTimeout(timer);
+      if (outer) outer.removeEventListener('abort', onAbort);
+    });
+  }
+
+  async function viaRelays(target, signal, ms, parse) {
+    let lastErr;
+    for (let n = 0; n < RELAYS.length; n++) {
+      if (signal.aborted) throw new Cancelled();
+      const i = (n + lastGoodRelay) % RELAYS.length;
+      try {
+        const resp = await fetchWithTimeout(RELAYS[i](target), ms, signal);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const out = await parse(resp);
+        lastGoodRelay = i;
+        return out;
+      } catch (e) {
+        if (signal.aborted) throw new Cancelled();
+        lastErr = e;
+      }
+    }
+    throw lastErr || new Error('All relays failed');
+  }
+
+  // Tries the metadata-rich JSON relay first, then the plain relays.
+  async function fetchPage(target, signal) {
+    try {
+      const resp = await fetchWithTimeout(JSON_RELAY(target), 14000, signal);
+      if (resp.ok) {
+        const json = await resp.json();
+        const c = json && json.contents;
+        if (typeof c === 'string' && c.indexOf('data:') === 0) {
+          throw new UserError('That address points to a file, not a web page.');
+        }
+        if (typeof c === 'string' && c.length > 20) {
+          return { html: c, info: json.status || null };
+        }
+      }
+    } catch (e) {
+      if (e instanceof UserError) throw e;
+      if (signal.aborted) throw new Cancelled();
+    }
+    const html = await viaRelays(target, signal, 12000, async (resp) => {
+      const text = await resp.text();
+      if (!text || text.length < 20) throw new Error('Empty response');
+      return text;
+    });
+    return { html, info: null };
+  }
+
+  function fetchBytes(target, signal) {
+    return viaRelays(target, signal, 10000, async (resp) => {
+      const buf = await resp.arrayBuffer();
+      if (!buf.byteLength) throw new Error('Empty response');
+      return buf;
+    });
+  }
+
+  async function pool(items, limit, worker, onProgress) {
+    let next = 0, done = 0;
+    async function lane() {
+      while (next < items.length) {
+        const i = next++;
+        await worker(items[i], i);
+        done++;
+        if (onProgress) onProgress(done, items.length);
+      }
+    }
+    const lanes = [];
+    for (let i = 0; i < Math.min(limit, items.length); i++) lanes.push(lane());
+    await Promise.all(lanes);
+  }
+
+  // ------------------------------------------------------------ extraction
+  function ldTypes(node, out) {
+    if (!node || typeof node !== 'object') return out;
+    if (Array.isArray(node)) { node.forEach((n) => ldTypes(n, out)); return out; }
+    if (node['@type']) [].concat(node['@type']).forEach((t) => out.push(String(t)));
+    if (node['@graph']) ldTypes(node['@graph'], out);
+    return out;
+  }
+
+  const BLOCK_SELECTOR = 'p,div,li,h1,h2,h3,h4,h5,h6,br,tr,section,article,header,footer,nav,main,aside,ul,ol,table,form,blockquote,pre,hr,dt,dd,figcaption';
+  const FILE_TLDS = /\.(png|jpe?g|gif|svg|webp|avif|css|js|ico|woff2?)$/i;
+
+  function extractAll(html, pageUrl) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+
+    let base = pageUrl;
+    const baseEl = doc.querySelector('base[href]');
+    if (baseEl) {
+      try { base = new URL(baseEl.getAttribute('href'), pageUrl).href; } catch (e) {}
+    }
+    const abs = (u) => { try { return new URL(u, base).href; } catch (e) { return null; } };
+    const absHttp = (u) => { const a = abs(u); return a && /^https?:/i.test(a) ? a : null; };
+    let pageHost = '';
+    try { pageHost = new URL(pageUrl).hostname; } catch (e) {}
+
+    // Meta
+    const meta = Object.create(null);
+    const titleEl = doc.querySelector('title');
+    meta.title = titleEl ? clean(titleEl.textContent) : null;
+    meta.language = doc.documentElement.getAttribute('lang') || null;
+    doc.querySelectorAll('meta').forEach((m) => {
+      const k = m.getAttribute('name') || m.getAttribute('property') || m.getAttribute('http-equiv');
+      const v = m.getAttribute('content');
+      if (k && v) meta[k] = v;
+    });
+
+    // <link> relations, canonical URL, favicon
+    const linkTags = [];
+    let canonical = null, favicon = null;
+    doc.querySelectorAll('link[href]').forEach((l) => {
+      const rel = (l.getAttribute('rel') || '').toLowerCase();
+      const href = abs(l.getAttribute('href'));
+      if (!href) return;
+      linkTags.push({ rel, href });
+      if (rel === 'canonical') canonical = href;
+      if (!favicon && /icon/.test(rel) && /^https?:/i.test(href)) favicon = href;
+    });
+
+    // JSON-LD
+    const structuredData = [];
+    const structuredLabels = [];
+    doc.querySelectorAll('script[type="application/ld+json"]').forEach((s) => {
+      try {
+        const j = JSON.parse(s.textContent);
+        structuredData.push(j);
+        const types = ldTypes(j, []);
+        structuredLabels.push(types.length ? types.join(', ') : 'JSON-LD block');
+      } catch (e) {
+        structuredData.push({ _parse_error: true, raw: s.textContent.slice(0, 500) });
+        structuredLabels.push('unparseable JSON-LD block');
+      }
+    });
+
+    // Forms
+    const forms = [];
+    doc.querySelectorAll('form').forEach((f) => {
+      const fields = [];
+      f.querySelectorAll('input,textarea,select').forEach((inp) => {
+        fields.push({
+          tag: inp.tagName.toLowerCase(),
+          name: inp.getAttribute('name'),
+          type: inp.getAttribute('type') || inp.tagName.toLowerCase(),
+          placeholder: inp.getAttribute('placeholder'),
+        });
+      });
+      forms.push({
+        action: abs(f.getAttribute('action') || ''),
+        method: (f.getAttribute('method') || 'get').toUpperCase(),
+        fields,
+      });
+    });
+
+    // Iframes
+    const iframes = [];
+    doc.querySelectorAll('iframe[src]').forEach((f) => {
+      const u = absHttp(f.getAttribute('src'));
+      if (u) iframes.push(u);
+    });
+
+    // Media
+    const media = [];
+    doc.querySelectorAll('video, audio').forEach((m) => {
+      const srcs = [];
+      const direct = m.getAttribute('src');
+      if (direct) srcs.push(direct);
+      m.querySelectorAll('source[src]').forEach((s) => srcs.push(s.getAttribute('src')));
+      srcs.forEach((s) => {
+        const u = absHttp(s);
+        if (u) media.push({ type: m.tagName.toLowerCase(), url: u });
+      });
+    });
+
+    // Headings, in document order
+    const headings = [];
+    doc.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((h) => {
+      const text = clean(h.textContent);
+      if (text) headings.push({ level: h.tagName.toLowerCase(), text });
+    });
+
+    // Links (mailto: feeds the email list instead)
+    const links = [];
+    const seenLinks = new Set();
+    const emailSet = new Set();
+    doc.querySelectorAll('a[href]').forEach((a) => {
+      const raw = (a.getAttribute('href') || '').trim();
+      if (!raw || raw.charAt(0) === '#') return;
+      if (/^mailto:/i.test(raw)) {
+        const addr = decodeURIComponent(raw.slice(7).split('?')[0] || '').trim().toLowerCase();
+        if (addr) addr.split(',').forEach((x) => { if (x.indexOf('@') > 0) emailSet.add(x.trim()); });
+        return;
+      }
+      const href = absHttp(raw);
+      if (!href) return;
+      let text = clean(a.textContent);
+      if (!text) {
+        const img = a.querySelector('img[alt]');
+        text = clean(a.getAttribute('aria-label') || a.getAttribute('title') || (img && img.getAttribute('alt')));
+      }
+      const key = href + '|' + text;
+      if (seenLinks.has(key)) return;
+      seenLinks.add(key);
+      let external = false;
+      try { external = new URL(href).hostname !== pageHost; } catch (e) {}
+      links.push({ url: href, text, external });
+    });
+
+    // Images (deduplicated by URL, inline data: images skipped)
+    const images = [];
+    const seenImages = new Set();
+    doc.querySelectorAll('img').forEach((img) => {
+      let src = img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-lazy-src');
+      if (!src || /^data:/i.test(src)) {
+        const ss = img.getAttribute('srcset');
+        src = ss ? ss.split(',')[0].trim().split(/\s+/)[0] : null;
+      }
+      if (!src) return;
+      const url = absHttp(src);
+      if (!url || seenImages.has(url)) return;
+      seenImages.add(url);
+      images.push({ url, alt: clean(img.getAttribute('alt')) });
+    });
+
+    // Tables
+    const tables = [];
+    doc.querySelectorAll('table').forEach((table) => {
+      const rows = [];
+      table.querySelectorAll('tr').forEach((tr) => {
+        const cells = Array.from(tr.querySelectorAll('td,th')).map((c) => clean(c.textContent));
+        if (cells.length) rows.push(cells);
+      });
+      if (rows.length) tables.push(rows);
+    });
+
+    // Scripts and stylesheets
+    const inlineScripts = [];
+    const externalScripts = [];
+    const seenScripts = new Set();
+    doc.querySelectorAll('script').forEach((s) => {
+      const type = (s.getAttribute('type') || '').toLowerCase();
+      if (type && !/javascript|module|ecmascript/.test(type)) return; // JSON-LD, templates, etc.
+      const src = s.getAttribute('src');
+      if (src) {
+        const u = absHttp(src);
+        if (u && !seenScripts.has(u)) { seenScripts.add(u); externalScripts.push(u); }
+      } else if (s.textContent.trim()) {
+        inlineScripts.push(s.textContent.trim());
+      }
+    });
+    const stylesheets = [];
+    const seenStyles = new Set();
+    doc.querySelectorAll('link[rel~="stylesheet"][href]').forEach((l) => {
+      const u = absHttp(l.getAttribute('href'));
+      if (u && !seenStyles.has(u)) { seenStyles.add(u); stylesheets.push(u); }
+    });
+    const inlineStyles = [];
+    doc.querySelectorAll('style').forEach((s) => {
+      if (s.textContent.trim()) inlineStyles.push(s.textContent.trim());
+    });
+
+    // Visible text, with line breaks at block boundaries so words don't fuse
+    let text = '';
+    if (doc.body) {
+      const body = doc.body.cloneNode(true);
+      body.querySelectorAll('script,style,noscript,template').forEach((n) => n.remove());
+      body.querySelectorAll(BLOCK_SELECTOR).forEach((n) => n.appendChild(doc.createTextNode('\n')));
+      body.querySelectorAll('td,th,span,a,button,label').forEach((n) => n.appendChild(doc.createTextNode(' ')));
+      text = body.textContent
+        .split('\n')
+        .map(clean)
+        .filter(Boolean)
+        .join('\n');
+    }
+    const wordCount = text ? text.split(/\s+/).filter(Boolean).length : 0;
+
+    // Emails: mailto links plus addresses written out in the text
+    (text.match(/[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}/gi) || []).forEach((m) => {
+      if (!FILE_TLDS.test(m)) emailSet.add(m.toLowerCase());
+    });
+    const emails = Array.from(emailSet);
+
+    // Buttons
+    const buttons = [];
+    doc.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]').forEach((b) => {
+      const label = b.tagName === 'INPUT' ? b.getAttribute('value') : b.textContent;
+      buttons.push({ text: clean(label) || clean(b.getAttribute('aria-label')) || '(no label)', type: b.getAttribute('type') || 'button' });
+    });
+
+    // Inline SVGs (given an xmlns so they work as standalone files)
+    const svgs = [];
+    doc.querySelectorAll('svg').forEach((svg) => {
+      const copy = svg.cloneNode(true);
+      if (!copy.getAttribute('xmlns')) copy.setAttribute('xmlns', NS_SVG);
+      svgs.push(copy.outerHTML);
+    });
+
+    // Every distinct host the page talks to
+    const domains = new Set();
+    const addHost = (u) => { try { domains.add(new URL(u).hostname); } catch (e) {} };
+    links.forEach((l) => addHost(l.url));
+    externalScripts.concat(stylesheets, iframes, images.map((i) => i.url), media.map((m) => m.url)).forEach(addHost);
+
+    return {
+      base, meta, canonical, favicon, linkTags, structuredData, structuredLabels, forms, iframes, media,
+      headings, links, images, tables, inlineScripts, externalScripts, stylesheets, inlineStyles,
+      text, wordCount, emails, buttons, svgs, domains: Array.from(domains).sort(),
+    };
+  }
+
+  // --------------------------------------------------------------- receipt
+  function assetItems(urls, tasks, extra) {
+    return urls.map((u, i) => {
+      const t = tasks && tasks[i];
+      const suffix = !t ? '' : t.status === 'ok' ? '  (saved)' : t.status === 'failed' ? '  (failed to fetch)' : t.status === 'skipped' ? '  (over limit, not fetched)' : '';
+      return u + (extra ? extra(i) : '') + suffix;
+    });
+  }
+
+  function buildLines(data, scriptTasks, styleTasks, imageTasks) {
+    const tableInfo = data.tables.map((t, i) => {
+      const cols = t.reduce((m, r) => Math.max(m, r.length), 0);
+      return 'Table ' + (i + 1) + ': ' + t.length + ' row' + (t.length === 1 ? '' : 's') + ' x ' + cols + ' col' + (cols === 1 ? '' : 's');
+    });
+    const scriptItems = assetItems(data.externalScripts, scriptTasks)
+      .concat(data.inlineScripts.map((s) => 'inline script (' + fmtBytes(s.length) + ')'));
+    const styleItems = assetItems(data.stylesheets, styleTasks)
+      .concat(data.inlineStyles.map((s) => 'inline <style> block (' + fmtBytes(s.length) + ')'));
+
+    return [
+      { label: 'Headings', items: data.headings.map((h) => h.level.toUpperCase() + '  ' + h.text) },
+      { label: 'Links', items: data.links.map((l) => (l.external ? '↗ ' : '') + (l.text ? l.text + ' → ' : '') + l.url) },
+      { label: 'Images', items: assetItems(data.images.map((i) => i.url), imageTasks, (i) => data.images[i].alt ? '  [' + data.images[i].alt + ']' : '') },
+      { label: 'Tables', items: tableInfo },
+      { label: 'Scripts', items: scriptItems },
+      { label: 'Stylesheets', items: styleItems },
+      { label: 'Forms', items: data.forms.map((f) => f.method + ' ' + (f.action || '(this page)') + ' — ' + f.fields.length + ' field' + (f.fields.length === 1 ? '' : 's')) },
+      { label: 'Iframes', items: data.iframes },
+      { label: 'Media files', items: data.media.map((m) => m.type + ': ' + m.url) },
+      { label: 'Structured data', items: data.structuredLabels },
+      { label: 'Emails', items: data.emails },
+      { label: 'Buttons', items: data.buttons.map((b) => b.text) },
+      { label: 'SVGs', items: data.svgs.map((s, i) => 'inline SVG #' + (i + 1) + ' (' + fmtBytes(s.length) + ')') },
+    ];
+  }
+
+  let panelSeq = 0;
+  function renderLine(line) {
+    const item = el('div', 'item');
+    const count = line.items ? line.items.length : line.value;
+    const expandable = line.items && line.items.length > 0;
+    const head = el(expandable ? 'button' : 'div', 'line');
+
+    if (expandable) {
+      const pid = 'panel-' + (++panelSeq);
+      head.type = 'button';
+      head.setAttribute('aria-expanded', 'false');
+      head.setAttribute('aria-controls', pid);
+      const caret = el('span', 'caret', '+');
+      caret.setAttribute('aria-hidden', 'true');
+      head.appendChild(caret);
+
+      const panel = el('ul', 'panel');
+      panel.id = pid;
+      panel.hidden = true;
+      line.items.slice(0, LIMITS.shown).forEach((t) => panel.appendChild(el('li', null, t)));
+      if (line.items.length > LIMITS.shown) {
+        panel.appendChild(el('li', 'more', '…and ' + (line.items.length - LIMITS.shown) + ' more, listed in data.json'));
+      }
+      head.addEventListener('click', () => {
+        const open = head.getAttribute('aria-expanded') === 'true';
+        head.setAttribute('aria-expanded', open ? 'false' : 'true');
+        caret.textContent = open ? '+' : '−';
+        panel.hidden = open;
+      });
+      item.appendChild(head);
+      head.appendChild(el('span', 'label', line.label));
+      head.appendChild(el('span', 'fill'));
+      head.appendChild(el('span', 'value', Number(count).toLocaleString()));
+      item.appendChild(panel);
+    } else {
+      if (!count) head.classList.add('zero');
+      head.appendChild(el('span', 'label', line.label));
+      head.appendChild(el('span', 'fill'));
+      head.appendChild(el('span', 'value', Number(count).toLocaleString()));
+      item.appendChild(head);
+    }
+    return item;
+  }
+
+  function drawBarcode(seed) {
+    const svg = $('barcode');
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    const rand = seededRandom(seed);
+    const W = 220;
+    svg.setAttribute('viewBox', '0 0 ' + W + ' 36');
+    svg.setAttribute('preserveAspectRatio', 'none');
+    let x = 0, dark = true;
+    while (x < W) {
+      const w = 1 + Math.floor(rand() * 4);
+      if (dark) {
+        const r = document.createElementNS(NS_SVG, 'rect');
+        r.setAttribute('x', x);
+        r.setAttribute('y', 0);
+        r.setAttribute('width', Math.min(w, W - x));
+        r.setAttribute('height', 36);
+        r.setAttribute('fill', 'currentColor');
+        svg.appendChild(r);
+      }
+      x += w;
+      dark = !dark;
+    }
+  }
+
+  function renderReceipt(ctx) {
+    const { data, lines, target, finalUrl, info, htmlLength, zipBytes, blob } = ctx;
+
+    $('rTitle').textContent = data.meta.title || data.meta['og:title'] || '(untitled page)';
+    $('rUrl').textContent = finalUrl;
+    const desc = data.meta.description || data.meta['og:description'] || '';
+    const descEl = $('rDesc');
+    descEl.textContent = desc;
+    descEl.classList.toggle('hidden', !desc);
+
+    const parts = [];
+    if (info && info.http_code) parts.push('HTTP ' + info.http_code);
+    if (info && info.content_type) parts.push(String(info.content_type).split(';')[0]);
+    if (info && info.response_time) parts.push((info.response_time / 1000).toFixed(2) + 's');
+    if (data.meta.language) parts.push('lang ' + data.meta.language);
+    parts.push(fmtBytes(htmlLength) + ' of HTML');
+    const infoEl = $('rInfo');
+    const isError = info && info.http_code >= 400;
+    infoEl.textContent = parts.join(' · ') + (isError ? ' — the site returned an error page, and this receipt covers that page' : '');
+    infoEl.classList.toggle('warn', !!isError);
+
+    const stamp = new Date();
+    const no = String(hashString(finalUrl) % 1000000);
+    $('rNo').textContent = 'No. ' + ('000000' + no).slice(-6) + ' · ' + stamp.toLocaleString([], {
+      year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+    });
+    drawBarcode(hashString(finalUrl + no));
+
+    itemsEl.textContent = '';
+    let total = 0;
+    lines.forEach((l) => { total += l.items.length; itemsEl.appendChild(renderLine(l)); });
+    $('cTotal').textContent = total.toLocaleString();
+
+    statsEl.textContent = '';
+    statsEl.appendChild(renderLine({ label: 'Word count', value: data.wordCount }));
+    statsEl.appendChild(renderLine({ label: 'Linked domains', items: data.domains }));
+
+    if (blob) {
+      downloadBtn.href = blobUrl;
+      let host = 'site';
+      try { host = new URL(finalUrl).hostname.replace(/[^a-zA-Z0-9_.-]/g, '_'); } catch (e) {}
+      downloadBtn.download = 'scrape_' + host + '.zip';
+      downloadBtn.textContent = 'DOWNLOAD .ZIP (' + fmtBytes(zipBytes) + ')';
+      downloadBtn.classList.remove('hidden');
+    } else {
+      downloadBtn.classList.add('hidden');
+    }
+
+    resultBox.classList.remove('hidden', 'printing');
+    void resultBox.offsetWidth; // restart the print animation
+    resultBox.classList.add('printing');
+    try { resultBox.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (e) {}
+  }
+
+  // ------------------------------------------------------------------- run
+  async function run() {
+    if (current) return;
+    clearError();
+    resultBox.classList.add('hidden');
+
+    let target;
+    try { target = normalizeUrl(urlInput.value); }
+    catch (e) { showError(e.message); urlInput.focus(); return; }
+
+    const wantAssets = optAssets.checked;
+    const wantImages = optImages.checked;
+    const canZip = typeof JSZip !== 'undefined';
+
+    const ctl = new AbortController();
+    current = ctl;
+    setRunning(true);
+
+    try {
+      setStatus('fetching page…', 0.05);
+      const page = await fetchPage(target, ctl.signal);
+      const info = page.info || null;
+      let finalUrl = target;
+      if (info && info.url && /^https?:\/\//i.test(info.url)) finalUrl = info.url;
+
+      setStatus('extracting…', 0.15);
+      const data = extractAll(page.html, finalUrl);
+
+      // ---- build the list of files to fetch
+      const zip = canZip ? new JSZip() : null;
+      const tasks = [];
+      const scriptTasks = [], styleTasks = [], imageTasks = [];
+      const makeTask = (kind, url, dir, prefix, skip) => {
+        const t = { kind, url, dir, prefix, status: skip ? 'skipped' : 'pending', file: null, bytes: 0 };
+        if (!skip) tasks.push(t);
+        return t;
+      };
+      let faviconTask = null;
+      if (canZip && wantAssets) {
+        data.externalScripts.forEach((u, i) => scriptTasks.push(makeTask('script', u, 'resources', '', i >= LIMITS.assets)));
+        data.stylesheets.forEach((u, i) => styleTasks.push(makeTask('stylesheet', u, 'resources', '', i >= LIMITS.assets)));
+        if (data.favicon) faviconTask = makeTask('favicon', data.favicon, 'resources', 'favicon_', false);
+      }
+      if (canZip && wantImages) {
+        data.images.forEach((im, i) => imageTasks.push(makeTask('image', im.url, 'images', '', i >= LIMITS.images)));
+      }
+
+      const used = { resources: new Set(), images: new Set() };
+      await pool(tasks, LIMITS.concurrency, async (t) => {
+        if (ctl.signal.aborted) return;
+        try {
+          const buf = await fetchBytes(t.url, ctl.signal);
+          t.file = uniqueName(used[t.dir], t.prefix + safeFileName(t.url));
+          t.bytes = buf.byteLength;
+          zip.folder(t.dir).file(t.file, buf);
+          t.status = 'ok';
+        } catch (e) {
+          if (!ctl.signal.aborted) t.status = 'failed';
+        }
+      }, (done, total) => setStatus('fetching files… ' + done + '/' + total, 0.15 + 0.7 * (done / total)));
+      if (ctl.signal.aborted) throw new Cancelled();
+
+      // ---- zip it up
+      let blob = null;
+      const lines = buildLines(data, scriptTasks, styleTasks, imageTasks);
+      const assetReport = (list) => list.map((t) => ({ url: t.url, status: t.status, file: t.file }));
+
+      const report = {
+        url: target,
+        final_url: finalUrl,
+        scraped_at: new Date().toISOString(),
+        response_status: info,
+        meta: Object.assign({}, data.meta),
+        canonical_url: data.canonical,
+        favicon: faviconTask ? { url: faviconTask.url, status: faviconTask.status, file: faviconTask.file } : data.favicon,
+        link_tags: data.linkTags,
+        word_count: data.wordCount,
+        distinct_linked_domains: data.domains,
+        headings: data.headings,
+        links: data.links,
+        images: data.images.map((im, i) => Object.assign({}, im, imageTasks[i] ? { status: imageTasks[i].status, file: imageTasks[i].file } : {})),
+        tables_count: data.tables.length,
+        forms: data.forms,
+        iframes: data.iframes,
+        media: data.media,
+        structured_data_count: data.structuredData.length,
+        external_scripts: wantAssets && canZip ? assetReport(scriptTasks) : data.externalScripts,
+        inline_script_count: data.inlineScripts.length,
+        stylesheets: wantAssets && canZip ? assetReport(styleTasks) : data.stylesheets,
+        inline_style_count: data.inlineStyles.length,
+        emails: data.emails,
+        buttons: data.buttons,
+        svgs_count: data.svgs.length,
+      };
+      lastJson = JSON.stringify(report, null, 2);
+
+      if (zip) {
+        zip.file('raw.html', page.html);
+        zip.file('text.txt', data.text);
+        zip.file('data.json', lastJson);
+        if (data.links.length) {
+          zip.file('links.csv', toCsv([['url', 'text', 'external']].concat(
+            data.links.map((l) => [l.url, l.text, l.external ? 'yes' : 'no']))));
+        }
+        if (data.inlineScripts.length) zip.file('inline_scripts.js', data.inlineScripts.join('\n\n/* ---- next inline script ---- */\n\n'));
+        if (data.inlineStyles.length) zip.file('inline_styles.css', data.inlineStyles.join('\n\n/* ---- next style block ---- */\n\n'));
+        if (data.structuredData.length) zip.file('structured_data.json', JSON.stringify(data.structuredData, null, 2));
+        if (data.tables.length) {
+          const tf = zip.folder('tables');
+          data.tables.forEach((t, i) => tf.file('table_' + (i + 1) + '.csv', toCsv(t)));
+        }
+        if (data.svgs.length) {
+          const sf = zip.folder('svgs');
+          data.svgs.slice(0, 100).forEach((s, i) => sf.file('svg_' + (i + 1) + '.svg', s));
+        }
+
+        setStatus('zipping…', 0.85);
+        blob = await zip.generateAsync(
+          { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } },
+          (m) => setStatus('zipping… ' + Math.round(m.percent) + '%', 0.85 + 0.15 * (m.percent / 100))
+        );
+        if (ctl.signal.aborted) throw new Cancelled();
+        if (blobUrl) URL.revokeObjectURL(blobUrl);
+        blobUrl = URL.createObjectURL(blob);
+      }
+
+      renderReceipt({ data, lines, target, finalUrl, info, htmlLength: page.html.length, zipBytes: blob ? blob.size : 0, blob });
+
+      const failed = tasks.filter((t) => t.status === 'failed').length;
+      let note = '';
+      if (!canZip) note = 'The zip library did not load, so there is no download. The receipt is still accurate.';
+      else if (failed) note = failed + ' file' + (failed === 1 ? '' : 's') + ' could not be fetched; they are marked on the receipt.';
+      setStatus(note, null);
+
+      try { history.replaceState(null, '', '?url=' + encodeURIComponent(target)); } catch (e) {}
+    } catch (err) {
+      if (err instanceof Cancelled) {
+        setStatus('Cancelled.', null);
+      } else if (err instanceof UserError) {
+        setStatus('', null);
+        showError(err.message);
+      } else {
+        console.error(err);
+        setStatus('', null);
+        showError("Couldn't reach that page through any of the public relays. Some sites block them. Check the address, or try again in a minute.");
+      }
+    } finally {
+      current = null;
+      setRunning(false);
+    }
+  }
+
+  // ---------------------------------------------------------------- events
+  form.addEventListener('submit', (e) => { e.preventDefault(); run(); });
+  cancelBtn.addEventListener('click', () => { if (current) current.abort(); });
+  printBtn.addEventListener('click', () => window.print());
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(() => true, () => false);
+    }
+    return new Promise((resolve) => {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) {}
+      document.body.removeChild(ta);
+      resolve(ok);
+    });
+  }
+
+  let copyTimer;
+  copyBtn.addEventListener('click', async () => {
+    if (!lastJson) return;
+    const ok = await copyText(lastJson);
+    copyBtn.textContent = ok ? 'COPIED' : 'COPY FAILED';
+    clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => { copyBtn.textContent = 'COPY JSON'; }, 1800);
+  });
+
+  // Prefill from ?url=… (does not auto-run; scraping stays a deliberate click)
+  try {
+    const q = new URLSearchParams(location.search).get('url');
+    if (q) urlInput.value = q;
+  } catch (e) {}
+})();
+</script>
+
+</body>
+</html>
